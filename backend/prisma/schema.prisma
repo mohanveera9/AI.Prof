@@ -1,0 +1,786 @@
+// Data model for the Autonomous Multi-Hospital Patient Intake, Scheduling &
+// Pre-Visit Voice Agent platform. Mirrors PRD §22 (Data Model) and §23
+// (State Management): transactional, conversational, user-context,
+// workflow, integration, and operational state are all modeled as
+// distinct, queryable entities rather than one blob.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================= Identity & Access =============================
+
+enum UserRole {
+  PLATFORM_ADMIN
+  HOSPITAL_ADMIN
+  DOCTOR
+  PATIENT
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  role         UserRole
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  hospitalStaff HospitalStaff?
+  doctor        Doctor?
+  patient       Patient?
+
+  reviewedHospitals Hospital[]     @relation("HospitalReviewedBy")
+  auditEvents       AuditEvent[]
+  notifications     Notification[]
+
+  @@index([role])
+}
+
+// Global platform-level configuration (singleton row).
+model PlatformSettings {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// ============================= Hospital =============================
+
+enum HospitalStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+model Hospital {
+  id               String         @id @default(cuid())
+  name             String
+  slug             String         @unique
+  addressLine      String?
+  city             String?
+  contactEmail     String?
+  contactPhone     String?
+  operatingHours   Json?
+  status           HospitalStatus @default(DRAFT)
+  rejectionReason  String?
+  submittedAt      DateTime?
+  reviewedAt       DateTime?
+  reviewedByUserId String?
+  reviewedByUser   User?          @relation("HospitalReviewedBy", fields: [reviewedByUserId], references: [id])
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  departments           Department[]
+  specialties           Specialty[]
+  doctors               Doctor[]
+  staff                 HospitalStaff[]
+  calendars             Calendar[]
+  appointmentTypes      AppointmentType[]
+  appointments          Appointment[]
+  questionnaires        Questionnaire[]
+  healthcareConnections HealthcareSystemConnection[]
+  workflows             Workflow[]
+  auditEvents           AuditEvent[]
+  operationalEvents     OperationalEvent[]
+
+  @@index([status])
+}
+
+model HospitalStaff {
+  id         String   @id @default(cuid())
+  userId     String   @unique
+  user       User     @relation(fields: [userId], references: [id])
+  hospitalId String
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
+  name       String
+  title      String?
+  createdAt  DateTime @default(now())
+
+  @@index([hospitalId])
+}
+
+model Department {
+  id         String   @id @default(cuid())
+  hospitalId String
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
+  name       String
+  createdAt  DateTime @default(now())
+
+  doctors Doctor[]
+
+  @@unique([hospitalId, name])
+}
+
+model Specialty {
+  id         String   @id @default(cuid())
+  hospitalId String
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
+  name       String
+  createdAt  DateTime @default(now())
+
+  doctors DoctorSpecialty[]
+
+  @@unique([hospitalId, name])
+}
+
+// ============================= Doctor =============================
+
+enum DoctorStatus {
+  INVITED
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+model Doctor {
+  id                                String       @id @default(cuid())
+  userId                            String?      @unique
+  user                              User?        @relation(fields: [userId], references: [id])
+  hospitalId                        String
+  hospital                          Hospital     @relation(fields: [hospitalId], references: [id])
+  departmentId                      String?
+  department                        Department?  @relation(fields: [departmentId], references: [id])
+  name                              String
+  invitedEmail                      String?
+  photoUrl                          String?
+  qualifications                    String?
+  experienceYears                   Int?
+  languages                         String[]
+  consultationTypes                 String[]
+  defaultAppointmentDurationMinutes Int          @default(30)
+  externalProviderId                String?
+  status                            DoctorStatus @default(INVITED)
+  createdAt                         DateTime     @default(now())
+  updatedAt                         DateTime     @updatedAt
+
+  specialties  DoctorSpecialty[]
+  calendars    Calendar[]
+  appointments Appointment[]
+
+  @@index([hospitalId, status])
+}
+
+// Explicit join model (rather than an implicit m2m) so it stays queryable/indexable.
+model DoctorSpecialty {
+  doctorId    String
+  doctor      Doctor    @relation(fields: [doctorId], references: [id])
+  specialtyId String
+  specialty   Specialty @relation(fields: [specialtyId], references: [id])
+
+  @@id([doctorId, specialtyId])
+}
+
+// ============================= Scheduling =============================
+
+model Calendar {
+  id         String   @id @default(cuid())
+  doctorId   String
+  doctor     Doctor   @relation(fields: [doctorId], references: [id])
+  hospitalId String
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
+  timezone   String   @default("UTC")
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  workingHours WorkingHour[]
+  blockedSlots BlockedSlot[]
+  leaveDays    LeaveDay[]
+  appointments Appointment[]
+
+  @@index([doctorId])
+}
+
+// Weekly recurring availability window, e.g. Mon 09:00-17:00.
+model WorkingHour {
+  id          String   @id @default(cuid())
+  calendarId  String
+  calendar    Calendar @relation(fields: [calendarId], references: [id])
+  dayOfWeek   Int // 0 = Sunday .. 6 = Saturday
+  startMinute Int // minutes from midnight, local calendar timezone
+  endMinute   Int
+
+  @@index([calendarId, dayOfWeek])
+}
+
+model BlockedSlot {
+  id         String   @id @default(cuid())
+  calendarId String
+  calendar   Calendar @relation(fields: [calendarId], references: [id])
+  startAt    DateTime
+  endAt      DateTime
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  @@index([calendarId, startAt, endAt])
+}
+
+// Full-day (or multi-day) doctor leave, distinct from a short blocked slot.
+model LeaveDay {
+  id         String   @id @default(cuid())
+  calendarId String
+  calendar   Calendar @relation(fields: [calendarId], references: [id])
+  startDate  DateTime
+  endDate    DateTime
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  @@index([calendarId, startDate, endDate])
+}
+
+model AppointmentType {
+  id              String   @id @default(cuid())
+  hospitalId      String
+  hospital        Hospital @relation(fields: [hospitalId], references: [id])
+  name            String
+  durationMinutes Int
+  createdAt       DateTime @default(now())
+
+  appointments Appointment[]
+
+  @@unique([hospitalId, name])
+}
+
+// Holds exclusive claim on (doctorId, slotStart) for the lifetime of an
+// active appointment. Inserted in the same transaction as the Appointment
+// row; the DB unique constraint is what actually prevents double-booking
+// under concurrency (PRD §7). Deleted when the appointment is cancelled or
+// fails, freeing the slot for reuse.
+model SlotReservation {
+  id            String      @id @default(cuid())
+  doctorId      String
+  slotStart     DateTime
+  appointmentId String      @unique
+  appointment   Appointment @relation(fields: [appointmentId], references: [id])
+  createdAt     DateTime    @default(now())
+
+  @@unique([doctorId, slotStart])
+}
+
+// ============================= Patient =============================
+
+model Patient {
+  id                      String    @id @default(cuid())
+  userId                  String    @unique
+  user                    User      @relation(fields: [userId], references: [id])
+  name                    String
+  dateOfBirth             DateTime?
+  phone                   String?
+  communicationPreference String    @default("EMAIL")
+  preferredLanguage       String?
+  externalPatientId       String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  preference             UserPreference?
+  appointments           Appointment[]
+  questionnaireResponses QuestionnaireResponse[]
+  conversations          AIConversation[]
+}
+
+// User Context/Preferences (§10, §23) — deliberately small and data-minimized.
+model UserPreference {
+  id        String   @id @default(cuid())
+  patientId String   @unique
+  patient   Patient  @relation(fields: [patientId], references: [id])
+  data      Json     @default("{}")
+  updatedAt DateTime @updatedAt
+}
+
+// ============================= Appointment =============================
+
+enum AppointmentStatus {
+  REQUESTED
+  PENDING
+  CONFIRMED
+  RESCHEDULED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+  FAILED
+  SYNCHRONIZATION_PENDING
+  RECONCILIATION_REQUIRED
+}
+
+model Appointment {
+  id                    String            @id @default(cuid())
+  hospitalId            String
+  hospital              Hospital          @relation(fields: [hospitalId], references: [id])
+  doctorId              String
+  doctor                Doctor            @relation(fields: [doctorId], references: [id])
+  calendarId            String
+  calendar              Calendar          @relation(fields: [calendarId], references: [id])
+  patientId             String
+  patient               Patient           @relation(fields: [patientId], references: [id])
+  appointmentTypeId     String?
+  appointmentType       AppointmentType?  @relation(fields: [appointmentTypeId], references: [id])
+  slotStart             DateTime
+  slotEnd               DateTime
+  status                AppointmentStatus @default(REQUESTED)
+  reasonNote            String?
+  idempotencyKey        String            @unique
+  externalAppointmentId String?
+  correlationId         String
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  slotReservation        SlotReservation?
+  statusHistory          AppointmentStatusHistory[]
+  questionnaireResponses QuestionnaireResponse[]
+  reconciliationRecords  ReconciliationRecord[]
+  integrationOperations  IntegrationOperation[]
+  workflowExecutions     WorkflowExecution[]
+  notifications          Notification[]
+
+  @@index([hospitalId, doctorId, slotStart])
+  @@index([patientId])
+  @@index([status])
+  @@index([correlationId])
+}
+
+model AppointmentStatusHistory {
+  id            String             @id @default(cuid())
+  appointmentId String
+  appointment   Appointment        @relation(fields: [appointmentId], references: [id])
+  fromStatus    AppointmentStatus?
+  toStatus      AppointmentStatus
+  reason        String?
+  actor         String? // "ai" | "patient" | "hospital_admin" | "doctor" | "system"
+  createdAt     DateTime           @default(now())
+
+  @@index([appointmentId])
+}
+
+// ============================= Questionnaires =============================
+
+enum QuestionFieldType {
+  YES_NO
+  CHOICE
+  MULTIPLE_CHOICE
+  NUMERIC
+  DATE
+  SHORT_TEXT
+  LONG_TEXT
+  STRUCTURED
+}
+
+model Questionnaire {
+  id                   String   @id @default(cuid())
+  hospitalId           String
+  hospital             Hospital @relation(fields: [hospitalId], references: [id])
+  title                String
+  specialtyId          String?
+  doctorId             String?
+  appointmentTypeId    String?
+  approvedConditionTag String?
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  questions QuestionnaireQuestion[]
+  responses QuestionnaireResponse[]
+
+  @@index([hospitalId])
+}
+
+model QuestionnaireQuestion {
+  id              String            @id @default(cuid())
+  questionnaireId String
+  questionnaire   Questionnaire     @relation(fields: [questionnaireId], references: [id])
+  prompt          String
+  type            QuestionFieldType
+  options         String[]
+  required        Boolean           @default(true)
+  order           Int               @default(0)
+
+  answers QuestionnaireAnswer[]
+
+  @@index([questionnaireId, order])
+}
+
+model QuestionnaireResponse {
+  id              String        @id @default(cuid())
+  questionnaireId String
+  questionnaire   Questionnaire @relation(fields: [questionnaireId], references: [id])
+  appointmentId   String
+  appointment     Appointment   @relation(fields: [appointmentId], references: [id])
+  patientId       String
+  patient         Patient       @relation(fields: [patientId], references: [id])
+  status          String        @default("PENDING") // PENDING | IN_PROGRESS | COMPLETED
+  completedAt     DateTime?
+  createdAt       DateTime      @default(now())
+
+  answers QuestionnaireAnswer[]
+
+  @@index([appointmentId])
+  @@index([patientId])
+}
+
+model QuestionnaireAnswer {
+  id           String                @id @default(cuid())
+  responseId   String
+  response     QuestionnaireResponse @relation(fields: [responseId], references: [id])
+  questionId   String
+  question     QuestionnaireQuestion @relation(fields: [questionId], references: [id])
+  valueText    String?
+  valueNumber  Float?
+  valueBoolean Boolean?
+  valueJson    Json?
+  createdAt    DateTime              @default(now())
+
+  @@unique([responseId, questionId])
+}
+
+// ============================= AI Conversation & Context =============================
+
+model AIConversation {
+  id        String    @id @default(cuid())
+  patientId String
+  patient   Patient   @relation(fields: [patientId], references: [id])
+  channel   String // "web_voice" | "web_chat" | "telephone"
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  context              AIContext?
+  messages             AIMessage[]
+  capabilityExecutions CapabilityExecution[]
+  evaluations          AIEvaluation[]
+
+  @@index([patientId])
+}
+
+model AIMessage {
+  id             String         @id @default(cuid())
+  conversationId String
+  conversation   AIConversation @relation(fields: [conversationId], references: [id])
+  role           String // "user" | "assistant" | "tool" | "system"
+  content        String
+  toolName       String?
+  createdAt      DateTime       @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+// Retained conversational state (§10) — kept separate from transactional
+// (Appointment) and user-profile (Patient/UserPreference) state.
+model AIContext {
+  id                   String         @id @default(cuid())
+  conversationId       String         @unique
+  conversation         AIConversation @relation(fields: [conversationId], references: [id])
+  intent               String?
+  selectedHospitalId   String?
+  selectedDoctorId     String?
+  selectedSlotStart    DateTime?
+  selectedSlotEnd      DateTime?
+  currentAppointmentId String?
+  workflowState        Json           @default("{}")
+  updatedAt            DateTime       @updatedAt
+}
+
+model CapabilityExecution {
+  id             String          @id @default(cuid())
+  conversationId String?
+  conversation   AIConversation? @relation(fields: [conversationId], references: [id])
+  capabilityName String
+  input          Json
+  output         Json?
+  success        Boolean
+  errorMessage   String?
+  latencyMs      Int?
+  idempotencyKey String?
+  correlationId  String
+  createdAt      DateTime        @default(now())
+
+  @@index([conversationId])
+  @@index([capabilityName])
+  @@index([correlationId])
+}
+
+model AIEvaluation {
+  id              String          @id @default(cuid())
+  conversationId  String?
+  conversation    AIConversation? @relation(fields: [conversationId], references: [id])
+  scenarioKey     String
+  input           String
+  expectedOutcome Json
+  actualOutcome   Json
+  passed          Boolean
+  notes           String?
+  createdAt       DateTime        @default(now())
+
+  @@index([scenarioKey])
+}
+
+// ============================= Healthcare-System Integration =============================
+
+model HealthcareSystemConnection {
+  id            String   @id @default(cuid())
+  hospitalId    String
+  hospital      Hospital @relation(fields: [hospitalId], references: [id])
+  connectorType String   @default("MOCK_EHR")
+  baseUrl       String
+  apiKeyRef     String // reference/name of secret, never the raw secret
+  isEnabled     Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([hospitalId, connectorType])
+}
+
+enum ExternalEntityType {
+  PATIENT
+  DOCTOR
+  APPOINTMENT
+  FACILITY
+}
+
+model ExternalIdentifierMapping {
+  id         String             @id @default(cuid())
+  hospitalId String
+  entityType ExternalEntityType
+  internalId String
+  externalId String
+  createdAt  DateTime           @default(now())
+
+  @@unique([hospitalId, entityType, internalId])
+  @@unique([hospitalId, entityType, externalId])
+}
+
+enum IntegrationOperationType {
+  PATIENT_LOOKUP
+  PROVIDER_LOOKUP
+  FACILITY_LOOKUP
+  CALENDAR_LOOKUP
+  AVAILABILITY_LOOKUP
+  APPOINTMENT_CREATE
+  APPOINTMENT_UPDATE
+  APPOINTMENT_CANCEL
+  APPOINTMENT_RETRIEVE
+  APPOINTMENT_VERIFY
+}
+
+enum IntegrationOperationStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  UNKNOWN
+  VERIFIED
+}
+
+enum IntegrationFailureType {
+  TIMEOUT
+  AUTH_FAILURE
+  AUTHZ_FAILURE
+  RATE_LIMITED
+  OUTAGE
+  VALIDATION_ERROR
+  MAPPING_ERROR
+  MISSING_ENTITY
+  SLOT_CONFLICT
+  DUPLICATE_REQUEST
+  PARTIAL_SUCCESS
+  UNKNOWN_OUTCOME
+}
+
+model IntegrationOperation {
+  id              String                     @id @default(cuid())
+  hospitalId      String
+  appointmentId   String?
+  appointment     Appointment?               @relation(fields: [appointmentId], references: [id])
+  type            IntegrationOperationType
+  status          IntegrationOperationStatus @default(PENDING)
+  failureType     IntegrationFailureType?
+  requestPayload  Json?
+  responsePayload Json?
+  retryCount      Int                        @default(0)
+  idempotencyKey  String?
+  correlationId   String
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+
+  verifications IntegrationVerification[]
+
+  @@index([hospitalId])
+  @@index([appointmentId])
+  @@index([correlationId])
+  @@index([status])
+}
+
+model IntegrationVerification {
+  id                     String               @id @default(cuid())
+  integrationOperationId String
+  integrationOperation   IntegrationOperation @relation(fields: [integrationOperationId], references: [id])
+  verified               Boolean
+  externalStatus         String?
+  checkedAt              DateTime             @default(now())
+
+  @@index([integrationOperationId])
+}
+
+model ReconciliationRecord {
+  id                String                @id @default(cuid())
+  hospitalId        String
+  appointmentId     String
+  appointment       Appointment           @relation(fields: [appointmentId], references: [id])
+  outcome           ReconciliationOutcome @default(PENDING)
+  attempts          Int                   @default(0)
+  details           Json?
+  escalatedToUserId String?
+  resolvedAt        DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  @@index([appointmentId])
+  @@index([hospitalId, outcome])
+}
+
+enum ReconciliationOutcome {
+  PENDING
+  FOUND_SYNCED
+  SAFELY_RETRIED
+  ESCALATED
+}
+
+// ============================= Workflows & Notifications =============================
+
+model Workflow {
+  id         String    @id @default(cuid())
+  hospitalId String?
+  hospital   Hospital? @relation(fields: [hospitalId], references: [id])
+  key        String
+  name       String
+  trigger    String // e.g. "APPOINTMENT_CONFIRMED"
+  steps      Json // ordered list of typed step definitions
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  executions WorkflowExecution[]
+
+  @@unique([hospitalId, key])
+}
+
+enum WorkflowExecutionStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  RETRIED
+}
+
+model WorkflowExecution {
+  id            String                  @id @default(cuid())
+  workflowId    String
+  workflow      Workflow                @relation(fields: [workflowId], references: [id])
+  appointmentId String?
+  appointment   Appointment?            @relation(fields: [appointmentId], references: [id])
+  status        WorkflowExecutionStatus @default(PENDING)
+  attempt       Int                     @default(0)
+  scheduledFor  DateTime?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  error         String?
+  correlationId String
+  createdAt     DateTime                @default(now())
+
+  @@index([workflowId])
+  @@index([appointmentId])
+  @@index([status])
+}
+
+enum NotificationType {
+  APPOINTMENT_CONFIRMATION
+  APPOINTMENT_REMINDER
+  APPOINTMENT_CANCELLATION
+  APPOINTMENT_RESCHEDULED
+  QUESTIONNAIRE_REMINDER
+  IMPORTANT_UPDATE
+  NEW_APPOINTMENT
+  APPLICATION_STATUS
+  INTEGRATION_FAILURE
+  OPERATIONAL_ALERT
+}
+
+model Notification {
+  id              String           @id @default(cuid())
+  recipientUserId String
+  recipientUser   User             @relation(fields: [recipientUserId], references: [id])
+  appointmentId   String?
+  appointment     Appointment?     @relation(fields: [appointmentId], references: [id])
+  type            NotificationType
+  channel         String           @default("CONSOLE") // CONSOLE | EMAIL_MOCK | IN_APP
+  subject         String?
+  body            String
+  status          String           @default("SENT")
+  createdAt       DateTime         @default(now())
+
+  @@index([recipientUserId])
+  @@index([appointmentId])
+}
+
+// ============================= Audit & Observability =============================
+
+enum AuditEventCategory {
+  LOGIN_ACCESS
+  APPOINTMENT_OPERATION
+  PATIENT_DATA_ACCESS
+  AI_ACTION
+  CAPABILITY_EXECUTION
+  INTEGRATION_OPERATION
+  CONFIGURATION_CHANGE
+  ADMINISTRATIVE_ACTION
+}
+
+model AuditEvent {
+  id            String             @id @default(cuid())
+  category      AuditEventCategory
+  actorUserId   String?
+  actorUser     User?              @relation(fields: [actorUserId], references: [id])
+  hospitalId    String?
+  hospital      Hospital?          @relation(fields: [hospitalId], references: [id])
+  action        String
+  targetType    String?
+  targetId      String?
+  metadata      Json?
+  correlationId String?
+  createdAt     DateTime           @default(now())
+
+  @@index([hospitalId])
+  @@index([category])
+  @@index([correlationId])
+  @@index([createdAt])
+}
+
+enum OperationalEventType {
+  INTEGRATION_RETRY
+  INTEGRATION_OUTCOME
+  RECONCILIATION_REQUIRED
+  WORKFLOW_STATE_CHANGE
+  HUMAN_ESCALATION
+}
+
+// Operational events are deliberately separate from AuditEvent (§19/§23):
+// audit = "who did what", operational = "system health / integration state".
+model OperationalEvent {
+  id            String               @id @default(cuid())
+  type          OperationalEventType
+  severity      String               @default("INFO") // INFO | WARNING | CRITICAL
+  hospitalId    String?
+  hospital      Hospital?            @relation(fields: [hospitalId], references: [id])
+  correlationId String?
+  metadata      Json?
+  createdAt     DateTime             @default(now())
+
+  @@index([hospitalId])
+  @@index([type])
+  @@index([correlationId])
+}

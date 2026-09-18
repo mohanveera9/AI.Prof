@@ -1,0 +1,36 @@
+{
+  "name": "ai-prof-healthcare-platform",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Autonomous Multi-Hospital Patient Intake, Scheduling & Pre-Visit Voice Agent",
+  "workspaces": [
+    "shared",
+    "mock-ehr",
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "build": "npm run build -w shared && npm run build -w mock-ehr && npm run build -w backend && npm run build -w frontend",
+    "dev:backend": "npm run dev -w backend",
+    "dev:frontend": "npm run dev -w frontend",
+    "dev:mock-ehr": "npm run dev -w mock-ehr",
+    "test": "npm run test -w backend",
+    "prisma:generate": "npm run prisma:generate -w backend",
+    "prisma:migrate": "npm run prisma:migrate -w backend",
+    "prisma:seed": "npm run prisma:seed -w backend"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "allowScripts": {
+    "@nestjs/core@10.4.22": true,
+    "@prisma/client@5.22.0": true,
+    "@prisma/engines@5.22.0": true,
+    "bcrypt@5.1.1": true,
+    "msgpackr-extract@3.0.4": true,
+    "prisma@5.22.0": true,
+    "esbuild@0.28.2": true,
+    "esbuild@0.21.5": true,
+    "fsevents@2.3.3": true
+  }
+}
