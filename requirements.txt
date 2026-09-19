@@ -1,0 +1,25 @@
+# AI.Prof — runtime and toolchain requirements
+# This is not a pip file. Node packages live in the workspace package.json
+# files and are installed with: npm install
+#
+# Product / functional requirements: see REQUIREMENTS.md
+# Setup instructions: see README.md
+
+# --- Required ---
+Node.js>=20
+npm>=10
+PostgreSQL>=16
+
+# --- Required for local DB via Compose ---
+Docker>=24
+Docker-Compose>=2
+
+# --- Optional ---
+Redis>=7
+OpenAI API key (text agent + Realtime voice)
+
+# --- Workspace packages (npm install) ---
+# shared:     zod
+# mock-ehr:   express, cors, dotenv, nanoid, zod
+# backend:    nestjs 10, prisma 5, passport-jwt, bullmq, openai, helmet, throttler
+# frontend:   react 18, vite 5, tanstack-query, react-router, tailwindcss
