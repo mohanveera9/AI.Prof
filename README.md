@@ -12,7 +12,15 @@ frontend (:5173)  →  backend (:4000)  →  PostgreSQL
 
 ## Requirements
 
-See [REQUIREMENTS.md](./REQUIREMENTS.md) for product requirements and [requirements.txt](./requirements.txt) for runtime/toolchain versions. Application packages are in each workspace `package.json` and install with `npm install`.
+| Doc | What it covers |
+| --- | --- |
+| [REQUIREMENTS.md](./REQUIREMENTS.md) | Functional and non-functional requirements |
+| [requirements.txt](./requirements.txt) | Node / Postgres / Docker versions |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | Modules, booking/EHR path, tenancy, data |
+| [docs/AI_TOOLS.md](./docs/AI_TOOLS.md) | All 17 capabilities, when to call them, HTTP paths |
+| [docs/AI_PROMPTS.md](./docs/AI_PROMPTS.md) | System prompt, tool descriptions, fallbacks |
+
+Application packages are in each workspace `package.json` and install with `npm install`.
 
 | Tool | Version |
 | --- | --- |
